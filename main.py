@@ -137,7 +137,7 @@ def main():
 
     schedule.every().monday.at("15:00").do(publish_two_posts)
     schedule.every().tuesday.at("15:00").do(publish_two_posts)
-    schedule.every().wednesday.at("15:00").do(publish_two_posts)
+    schedule.every().wednesday.at("20:08").do(publish_two_posts)
     schedule.every().thursday.at("15:00").do(publish_two_posts)
     schedule.every().friday.at("15:00").do(publish_two_posts)
 
