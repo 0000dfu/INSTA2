@@ -3,33 +3,34 @@ import random
 import time
 import schedule
 import tempfile
-from datetime import datetime
 from instagrapi import Client
+from moviepy.editor import VideoFileClip
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-# جلب بيانات البيئة
-IG_USERNAME = os.getenv("IG_USERNAME")
-IG_PASSWORD = os.getenv("IG_PASSWORD")
+# الحسابات الثلاثة
+ACCOUNTS = [
+    {"username": os.getenv("IG_USERNAME1"), "password": os.getenv("IG_PASSWORD1")},
+    {"username": os.getenv("IG_USERNAME2"), "password": os.getenv("IG_PASSWORD2")},
+    {"username": os.getenv("IG_USERNAME3"), "password": os.getenv("IG_PASSWORD3")},
+]
+
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+if not SERVICE_ACCOUNT_JSON:
+    raise Exception("❌ يرجى تعيين SERVICE_ACCOUNT_JSON في متغيرات البيئة.")
 
-if not (IG_USERNAME and IG_PASSWORD and SERVICE_ACCOUNT_JSON):
-    raise Exception("❌ يرجى تعيين المتغيرات IG_USERNAME و IG_PASSWORD و SERVICE_ACCOUNT_JSON في البيئة")
-
-# إنشاء ملف JSON مؤقت لحساب الخدمة
+# إعداد Google Drive
 with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp_file:
     tmp_file.write(SERVICE_ACCOUNT_JSON)
     tmp_file.flush()
     SERVICE_ACCOUNT_FILE = tmp_file.name
 
-# إعداد Google Drive
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 credentials = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 drive_service = build('drive', 'v3', credentials=credentials)
 
-POSTED_LOG = "posted_from_drive.txt"
-
+# وصف المنشورات
 POST_CAPTIONS = [
     "🚀 انطلق بقوة كل يوم!",
     "🎯 هذا الفيديو فيه درس كبير.",
@@ -44,21 +45,28 @@ STORY_CAPTIONS = [
     "📌 شوف الستوري الجديد!"
 ]
 
-def load_posted():
-    if not os.path.exists(POSTED_LOG):
+# مسارات سجل النشر لكل حساب
+def posted_log_path(username):
+    return f"posted_{username}.txt"
+
+def load_posted(username):
+    path = posted_log_path(username)
+    if not os.path.exists(path):
         return set()
-    with open(POSTED_LOG, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return set(line.strip() for line in f.readlines())
 
-def save_posted(filename):
-    with open(POSTED_LOG, "a", encoding="utf-8") as f:
+def save_posted(username, filename):
+    with open(posted_log_path(username), "a", encoding="utf-8") as f:
         f.write(filename + "\n")
 
+# تحميل قائمة الفيديوهات من Drive
 def get_videos_from_drive():
     query = "mimeType contains 'video/' and trashed = false"
     results = drive_service.files().list(q=query, fields="files(id, name)").execute()
     return results.get("files", [])
 
+# تحميل فيديو مؤقتًا
 def download_video(file):
     request = drive_service.files().get_media(fileId=file['id'])
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
@@ -68,82 +76,114 @@ def download_video(file):
             _, done = downloader.next_chunk()
         return tmp.name
 
-def publish_post(client, file):
+# فحص صلاحية الفيديو للستوري (≤ 60 ثانية)
+def is_valid_story_video(path):
+    try:
+        clip = VideoFileClip(path)
+        duration = clip.duration
+        clip.close()
+        return duration <= 60
+    except:
+        return False
+
+# نشر ريلز
+def publish_post(client, file, username):
     caption = random.choice(POST_CAPTIONS)
     tmp_path = download_video(file)
     try:
-        print(f"⬆️ نشر ريلز: {file['name']} مع وصف: {caption}")
+        print(f"⬆️ [{username}] نشر ريلز: {file['name']} - {caption}")
         client.clip_upload(tmp_path, caption)
-        save_posted(file['name'])
+        save_posted(username, file['name'])
     except Exception as e:
-        print(f"❌ فشل نشر {file['name']}: {e}")
+        print(f"❌ [{username}] فشل نشر {file['name']}: {e}")
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-def publish_story(client, file):
+# نشر Story
+def publish_story(client, file, username):
     caption = random.choice(STORY_CAPTIONS)
     tmp_path = download_video(file)
     try:
-        print(f"⬆️ نشر ستوري: {file['name']} مع وصف: {caption}")
+        if not is_valid_story_video(tmp_path):
+            print(f"🚫 [{username}] الفيديو {file['name']} أطول من 60 ثانية، تم تخطيه.")
+            return
+        print(f"⬆️ [{username}] نشر ستوري: {file['name']} - {caption}")
         client.video_upload_to_story(tmp_path, caption)
-        save_posted(file['name'])
+        save_posted(username, file['name'])
     except Exception as e:
-        print(f"❌ فشل ستوري: {file['name']}: {e}")
+        print(f"❌ [{username}] فشل ستوري {file['name']}: {e}")
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-def main():
-    print("🔐 تسجيل الدخول...")
+# تنفيذ المهام لحساب
+def run_for_account(account, post_now=False, story_now=False):
+    username = account['username']
+    password = account['password']
+    posted = load_posted(username)
+
     client = Client()
-    client.login(IG_USERNAME, IG_PASSWORD)
-    posted = load_posted()
+    try:
+        session_path = f"{username}_session.json"
+        if os.path.exists(session_path):
+            client.load_settings(session_path)
 
-    def pick_available_videos(n=1):
-        all_files = get_videos_from_drive()
-        available = [f for f in all_files if f['name'].lower().endswith('.mp4') and f['name'] not in posted]
-        random.shuffle(available)
-        return available[:n]
+        client.login(username, password)
+        client.dump_settings(session_path)
 
-    def publish_two_posts():
-        print("🟢 بدء نشر منشورين...")
-        for file in pick_available_videos(2):
-            publish_post(client, file)
-            posted.add(file['name'])
-            time.sleep(random.randint(30, 60))
+        def pick_available_videos(n=1):
+            all_files = get_videos_from_drive()
+            available = [f for f in all_files if f['name'].lower().endswith('.mp4') and f['name'] not in posted]
+            random.shuffle(available)
+            return available[:n]
 
-    def publish_daily_story():
-        print("🔵 نشر ستوري...")
-        files = pick_available_videos()
-        if not files:
-            print("🚫 لا توجد فيديوهات متاحة.")
-            return
-        publish_story(client, files[0])
-        posted.add(files[0]['name'])
+        if story_now:
+            print(f"📲 [{username}] نشر ستوري")
+            files = pick_available_videos()
+            if files:
+                publish_story(client, files[0], username)
+                posted.add(files[0]['name'])
+            time.sleep(random.randint(3, 6))
 
-    def publish_story_then_one_post():
-        publish_daily_story()
-        print("⏳ انتظار 2 دقائق...")
-        time.sleep(2 * 60)
-        publish_two_posts()
+        if post_now:
+            print(f"📸 [{username}] نشر منشورات")
+            for file in pick_available_videos(2):
+                publish_post(client, file, username)
+                posted.add(file['name'])
+                time.sleep(random.randint(30, 60))
 
-    # جدولة النشر (بتوقيت UTC)
-    schedule.every().monday.at("09:00").do(publish_two_posts)
-    schedule.every().tuesday.at("09:00").do(publish_two_posts)
-    schedule.every().wednesday.at("09:00").do(publish_two_posts)
-    schedule.every().thursday.at("09:00").do(publish_two_posts)
-    schedule.every().friday.at("09:00").do(publish_two_posts)
+    except Exception as e:
+        print(f"❌ [{username}] فشل تسجيل الدخول أو النشر: {e}")
 
-    schedule.every().monday.at("15:00").do(publish_two_posts)
-    schedule.every().tuesday.at("15:00").do(publish_two_posts)
-    schedule.every().wednesday.at("20:08").do(publish_two_posts)
-    schedule.every().thursday.at("15:00").do(publish_two_posts)
-    schedule.every().friday.at("15:00").do(publish_two_posts)
+# المهام المجدولة
+def main():
+    def job_story():
+        for account in ACCOUNTS:
+            run_for_account(account, story_now=True)
 
-    schedule.every().day.at("11:00").do(publish_daily_story)
-  
-    print("⏰ السكربت يعمل الآن تلقائيًا. اضغط Ctrl+C للإيقاف.")
+    def job_posts():
+        for i, account in enumerate(ACCOUNTS):
+            time.sleep(i * 60)
+            run_for_account(account, post_now=True)
+
+    # جدولة المنشورات
+    schedule.every().monday.at("09:00").do(job_posts)
+    schedule.every().tuesday.at("09:00").do(job_posts)
+    schedule.every().wednesday.at("09:00").do(job_posts)
+    schedule.every().thursday.at("09:00").do(job_posts)
+    schedule.every().friday.at("09:00").do(job_posts)
+
+    schedule.every().monday.at("15:00").do(job_posts)
+    schedule.every().tuesday.at("15:00").do(job_posts)
+    schedule.every().wednesday.at("15:00").do(job_posts)
+    schedule.every().thursday.at("15:00").do(job_posts)
+    schedule.every().friday.at("15:00").do(job_posts)
+
+    # ستوري يوميًا
+    schedule.every().day.at("11:00").do(job_story)
+
+    print("⏰ السكربت يعمل تلقائيًا الآن...")
 
     try:
         while True:
