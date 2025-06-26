@@ -4,7 +4,6 @@ import time
 import schedule
 import tempfile
 from instagrapi import Client
-from moviepy.editor import VideoFileClip
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
