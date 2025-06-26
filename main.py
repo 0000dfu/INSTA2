@@ -176,7 +176,7 @@ def main():
     schedule.every().monday.at("15:00").do(job_posts)
     schedule.every().tuesday.at("15:00").do(job_posts)
     schedule.every().wednesday.at("15:00").do(job_posts)
-    schedule.every().thursday.at("15:00").do(job_posts)
+    schedule.every().thursday.at("10:03").do(job_posts)
     schedule.every().friday.at("15:00").do(job_posts)
 
     # ستوري يوميًا
